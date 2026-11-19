@@ -176,7 +176,7 @@ def ge_eaSimpleWithElitism(population, toolbox, cxpb, mutpb, ngen, elite_size,
     selection_time = 0
     
     if points_test:
-        fitness_test = np.NaN
+        fitness_test = np.nan
     
     record = stats.compile(population) if stats else {}
     if points_test: 
@@ -277,7 +277,7 @@ def ge_eaSimpleWithElitism(population, toolbox, cxpb, mutpb, ngen, elite_size,
                 print("gen =", gen, ", Best fitness =", halloffame.items[0].fitness.values, ", Number of invalids =", invalid)
             if points_test:
                 if gen < ngen:
-                    fitness_test = np.NaN
+                    fitness_test = np.nan
                 else:
                     fitness_test = toolbox.evaluate(halloffame.items[0], points_test)[0]
             

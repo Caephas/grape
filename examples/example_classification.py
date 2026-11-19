@@ -183,7 +183,7 @@ def fitness_eval(individual, points):
     Y = points[1]
     
     if individual.invalid == True:
-        return np.NaN,
+        return np.nan,
 
     # Evaluate the expression
     try:
@@ -192,13 +192,13 @@ def fitness_eval(individual, points):
             MemoryError):
         # FP err can happen through eg overflow (lots of pow/exp calls)
         # ZeroDiv can happen when using unprotected operators
-        return np.NaN,
+        return np.nan,
     assert np.isrealobj(pred)
     
     try:
         Y_class = [1 if pred[i] > 0 else 0 for i in range(len(Y))]
     except (IndexError, TypeError):
-        return np.NaN,
+        return np.nan,
     fitness = mae(Y, Y_class)
     
     return fitness,

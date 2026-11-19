@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "grape-bds"
+version = "0.2.0"
+description = "Grammatical Evolution framework built with DEAP — now featuring Epigenetic-Lamarckian Grammatical Evolution (EL-GE)"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [
+    { name = "Allan de Lima" },
+    { name = "Caephas (EL-GE Architecture & Packaging)" },
+]
+keywords = [
+    "grammatical-evolution",
+    "genetic-programming",
+    "evolutionary-computation",
+    "deap",
+    "el-ge",
+    "epigenetic",
+    "lamarckian",
+    "symbolic-regression",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "scikit-learn>=1.2",
+    "deap>=1.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/Caephas/grape"
+Repository = "https://github.com/Caephas/grape"
+Upstream = "https://github.com/bdsul/grape"
+
+[tool.hatch.build.targets.wheel]
+packages = ["grape"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/grape",
+    "/examples",
+    "/tests",
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+]

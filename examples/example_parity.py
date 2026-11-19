@@ -77,7 +77,7 @@ def fitness_eval(individual, points, penalty_divider=None, penalise_greater_than
     Y = points[1]
     
     if individual.invalid == True:
-        return np.NaN,
+        return np.nan,
 
     # Evaluate the expression
     try:
@@ -86,7 +86,7 @@ def fitness_eval(individual, points, penalty_divider=None, penalise_greater_than
             MemoryError):
         # FP err can happen through eg overflow (lots of pow/exp calls)
         # ZeroDiv can happen when using unprotected operators
-        return np.NaN,
+        return np.nan,
     assert np.isrealobj(pred)
     
     fitness = mae(Y, pred)

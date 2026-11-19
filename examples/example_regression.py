@@ -91,13 +91,13 @@ def fitness_eval(individual, points):
     y = points[1]
     
     if individual.invalid == True:
-        return np.NaN,
+        return np.nan,
 
     try:
         pred = eval(individual.phenotype)
     except (FloatingPointError, ZeroDivisionError, OverflowError,
             MemoryError, ValueError):
-        return np.NaN,
+        return np.nan,
     except Exception as err:
             # Other errors should not usually happen (unless we have
             # an unprotected operator) so user would prefer to see them.
@@ -109,7 +109,7 @@ def fitness_eval(individual, points):
         fitness = np.mean(np.square(y - pred))
     except (FloatingPointError, ZeroDivisionError, OverflowError,
             MemoryError, ValueError):
-        fitness = np.NaN
+        fitness = np.nan
     except Exception as err:
             # Other errors should not usually happen (unless we have
             # an unprotected operator) so user would prefer to see them.
@@ -117,7 +117,7 @@ def fitness_eval(individual, points):
             raise
         
     if fitness == float("inf"):
-        return np.NaN,
+        return np.nan,
     
     return fitness,
 
