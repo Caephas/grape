@@ -4,14 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "grape-bds"
-version = "0.2.0"
+version = "0.2.1"
 description = "Grammatical Evolution framework built with DEAP — now featuring Epigenetic-Lamarckian Grammatical Evolution (EL-GE)"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.9"
 authors = [
+    { name = "Arinze Obidiegwu" },
     { name = "Allan de Lima" },
-    { name = "Caephas (EL-GE Architecture & Packaging)" },
 ]
 keywords = [
     "grammatical-evolution",
