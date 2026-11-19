@@ -59,6 +59,70 @@ def _make_digit_constant_node(val: float, nt_name: str, grammar) -> Optional[Der
     )
 
 
+def _eval_ind(evaluate_fn, ind, points_train) -> float:
+    """Call `evaluate_fn(ind, points_train)` or `evaluate_fn(ind)` when `points_train is None`."""
+    if points_train is not None:
+        return evaluate_fn(ind, points_train)[0]
+    try:
+        return evaluate_fn(ind)[0]
+    except TypeError:
+        return evaluate_fn(ind, None)[0]
+
+
+def _is_noop_quantum_gate(gate_pheno: str) -> bool:
+    s = gate_pheno.replace('"', "").replace("\\n", "").replace(" ", "").strip().lower()
+    if any(s.startswith(p) for p in ("qc.id(", "qml.identity(", "cirq.i(")):
+        return True
+    for prefix in (
+        "qc.rx(0,", "qc.ry(0,", "qc.rz(0,", "qc.rxx(0,", "qc.ryy(0,", "qc.rzz(0,", "qc.rzx(0,", "qc.u(0,0,0,",
+        "qml.rx(0,", "qml.ry(0,", "qml.rz(0,", "cirq.rx(0)", "cirq.ry(0)", "cirq.rz(0)",
+    ):
+        if s.startswith(prefix):
+            return True
+    return False
+
+
+def _are_inverse_quantum_gates(g1_pheno: str, g2_pheno: str) -> bool:
+    s1 = g1_pheno.replace('"', "").replace("\\n", "").replace(" ", "").strip().lower()
+    s2 = g2_pheno.replace('"', "").replace("\\n", "").replace(" ", "").strip().lower()
+    if s1 == s2:
+        for inv_prefix in (
+            # Qiskit
+            "qc.h(", "qc.x(", "qc.y(", "qc.z(", "qc.cx(", "qc.cy(", "qc.cz(", "qc.swap(", "qc.ccx(", "qc.cswap(",
+            # PennyLane
+            "qml.hadamard(", "qml.paulix(", "qml.pauliy(", "qml.pauliz(", "qml.cnot(", "qml.cy(", "qml.cz(", "qml.swap(", "qml.toffoli(",
+            # Cirq
+            "cirq.h(", "cirq.x(", "cirq.y(", "cirq.z(", "cirq.cnot(", "cirq.cz(", "cirq.swap(", "cirq.toffoli(",
+        ):
+            if s1.startswith(inv_prefix):
+                return True
+    for p1, p2 in (("qc.s(", "qc.sdg("), ("qc.sdg(", "qc.s("), ("qc.t(", "qc.tdg("), ("qc.tdg(", "qc.t(")):
+        if s1.startswith(p1) and s2.startswith(p2) and s1[len(p1):] == s2[len(p2):]:
+            return True
+    return False
+
+
+def _is_tunable_numeric_nt(nt_name: str, grammar) -> bool:
+    """
+    Grammar-agnostic detection of numeric / angle parameter leaf non-terminals
+    (e.g. `<c>`, `<Angle>`, `<theta>`, `<param>`, `<const>`).
+    """
+    if nt_name == "<c>":
+        return True
+    if nt_name not in grammar.non_terminals:
+        return False
+    idx = grammar.non_terminals.index(nt_name)
+    prods = [pr[0].replace('"', "").strip() for pr in grammar.production_rules[idx]]
+    if len(prods) < 4:
+        return False
+    # Must be a pure terminal leaf table (no child `<...>`) where choices represent numbers/angles
+    if any("<" in p or ">" in p for p in prods):
+        return False
+    has_float_or_pi = any(("." in p or "pi" in p.lower()) for p in prods)
+    all_numeric_like = all(any(ch.isdigit() for ch in p) or "pi" in p.lower() for p in prods)
+    return has_float_or_pi and all_numeric_like
+
+
 def _is_zero_phenotype(pheno: str) -> bool:
     try:
         return "x[" not in pheno and abs(float(pheno)) < 1e-9
@@ -232,6 +296,20 @@ def simplify_derivation_tree(node: DerivationNode, grammar) -> Tuple[DerivationN
                 if left.children[0].render_phenotype() == r_pheno:
                     return left.children[2], True
 
+    # 5. Any right-recursive statement/gate list (`<List> ::= <Item> <List>`) unitary simplification
+    if len(node.children) == 2 and node.children[1].nt_name == node.nt_name:
+        first_gate, tail_list = node.children[0], node.children[1]
+        g1_str = first_gate.render_phenotype()
+        # (a) Drop identity / zero-rotation gate
+        if _is_noop_quantum_gate(g1_str):
+            return tail_list, True
+        # (b) Cancel adjacent self-inverse gates: G * (G * Rest) -> Rest
+        if len(tail_list.children) == 2 and tail_list.children[1].nt_name == node.nt_name:
+            second_gate, inner_rest = tail_list.children[0], tail_list.children[1]
+            g2_str = second_gate.render_phenotype()
+            if _are_inverse_quantum_gates(g1_str, g2_str):
+                return inner_rest, True
+
     return node, changed
 
 
@@ -289,7 +367,7 @@ def _causal_knockout_prune(
         )
         reMap_fn(ind, cand_genome, grammar, max_tree_depth, codon_consumption)
         if not ind.invalid:
-            cand_fit = evaluate_fn(ind, points_train)[0]
+            cand_fit = _eval_ind(evaluate_fn, ind, points_train)
             is_better_or_equal = (
                 not math.isnan(cand_fit)
                 and ((cand_fit <= best_fit + 1e-12) if minimize else (cand_fit >= best_fit - 1e-12))
@@ -304,15 +382,15 @@ def _causal_knockout_prune(
     return root, best_fit, pruned_any
 
 
-def _collect_constant_nodes(node: DerivationNode, out: List[DerivationNode]) -> None:
+def _collect_constant_nodes(node: DerivationNode, grammar, out: List[DerivationNode]) -> None:
     if node.rule_str == "<c><c>.<c><c>" and len(node.children) == 4:
         out.append(node)
         return
-    if node.nt_name == "<c>" and not node.children:
+    if not node.children and _is_tunable_numeric_nt(node.nt_name, grammar):
         out.append(node)
         return
     for c in node.children:
-        _collect_constant_nodes(c, out)
+        _collect_constant_nodes(c, grammar, out)
 
 
 def lamarckian_simplify_individual(
@@ -371,7 +449,7 @@ def lamarckian_simplify_individual(
         simplified_root = root.clone()
         tree_changed = False
 
-    if tune_constants and evaluate_fn is not None and points_train is not None and old_fitness is not None:
+    if tune_constants and evaluate_fn is not None and old_fitness is not None:
         # Step A: Causal Knock-Out Bloat Pruning (only on bloated trees: used_codons > 20)
         if is_bloated:
             simplified_root, best_fit, pruned_any = _causal_knockout_prune(
@@ -388,17 +466,20 @@ def lamarckian_simplify_individual(
                 rng=_rng,
             )
 
-        # Step B: Coordinate Constant Tuning on `<c>` leaves
+        # Step B: Agnostic Coordinate Parameter / Constant Tuning on any numeric/angle leaf non-terminal
         const_nodes: List[DerivationNode] = []
-        _collect_constant_nodes(simplified_root, const_nodes)
-        if const_nodes and "<c>" in grammar.non_terminals:
-            c_idx = grammar.non_terminals.index("<c>")
-            k_c = grammar.n_rules[c_idx]
+        _collect_constant_nodes(simplified_root, grammar, const_nodes)
+        if const_nodes:
             minimize = ind.fitness.weights[0] < 0
 
             for _ in range(n_tune_steps):
                 target = _rng.choice(const_nodes)
                 digit_child = _rng.choice(target.children) if (target.rule_str == "<c><c>.<c><c>" and len(target.children) == 4) else target
+                c_nt = digit_child.nt_name
+                if c_nt not in grammar.non_terminals:
+                    continue
+                c_idx = grammar.non_terminals.index(c_nt)
+                k_c = grammar.n_rules[c_idx]
 
                 old_rule_idx = digit_child.rule_index
                 old_rule_str = digit_child.rule_str
@@ -420,7 +501,7 @@ def lamarckian_simplify_individual(
                 )
                 reMap_fn(ind, cand_genome, grammar, max_tree_depth, codon_consumption)
                 if not ind.invalid:
-                    cand_fit = evaluate_fn(ind, points_train)[0]
+                    cand_fit = _eval_ind(evaluate_fn, ind, points_train)
                     is_better = (
                         not math.isnan(cand_fit)
                         and ((cand_fit < best_fit - 1e-9) if minimize else (cand_fit > best_fit + 1e-9))
@@ -456,8 +537,8 @@ def lamarckian_simplify_individual(
             ind.fitness.values = (old_fitness,)
         return False
 
-    if evaluate_fn is not None and points_train is not None and old_fitness is not None:
-        new_fit = evaluate_fn(ind, points_train)[0]
+    if evaluate_fn is not None and old_fitness is not None:
+        new_fit = _eval_ind(evaluate_fn, ind, points_train)
         minimize = ind.fitness.weights[0] < 0
         strictly_better = (not math.isnan(new_fit)) and (
             (new_fit < old_fitness - 1e-9) if minimize else (new_fit > old_fitness + 1e-9)
@@ -555,8 +636,8 @@ def lamarckian_population_step(
             target_worst = worst_slots[worst_idx]
             worst_idx += 1
             reMap_fn(target_worst, list(probe.genome), grammar, max_tree_depth, codon_consumption)
-            if evaluate_fn is not None and points_train is not None:
-                target_worst.fitness.values = evaluate_fn(target_worst, points_train)
+            if evaluate_fn is not None:
+                target_worst.fitness.values = (_eval_ind(evaluate_fn, target_worst, points_train),)
             else:
                 target_worst.fitness.values = (new_fit,)
             n_simplified += 1

@@ -99,6 +99,7 @@ class EpigeneticBNFAgent:
         ollama_url: str = "http://localhost:11434/api/generate",
         temperature: float = 0.2,
         timeout_sec: int = 30,
+        target_non_terminals: Optional[List[str]] = None,
     ):
         self.initial_bnf_path = Path(initial_bnf_path)
         self.grammar_class = grammar_class
@@ -107,6 +108,7 @@ class EpigeneticBNFAgent:
         self.max_rules_per_epoch = max_rules_per_epoch
         self.max_total_added_rules = max_total_added_rules
         self.elite_fraction = elite_fraction
+        self.user_target_nts = target_non_terminals
 
         self.backend = backend.lower().strip()
         self.model_name = model_name
@@ -124,14 +126,74 @@ class EpigeneticBNFAgent:
             for idx, nt in enumerate(grammar.non_terminals)
         }
 
-    def _target_non_terminal(self, grammar) -> str:
-        """Select the main recursive expression/operator non-terminal to evolve."""
+    def _discover_target_non_terminals(self, grammar) -> List[str]:
+        """
+        Grammar- and framework-agnostic discovery of expandable compositional non-terminals.
+        1. If the user explicitly passed `target_non_terminals`, use those.
+        2. Otherwise, inspect the BNF production graph:
+           - Preserve classic `<op>` / `<e>` preference for standard parity/regression grammars.
+           - Skip unary wrapper non-terminals (k == 1, like `<Program> ::= <Init> <Body> <Measure>`)
+             and pure terminal leaf tables (0 child non-terminals in all productions).
+           - Select recursive multi-choice non-terminals (k >= 2) and their multi-choice
+             compositional children.
+        """
+        if self.user_target_nts:
+            valid_user = [nt for nt in self.user_target_nts if nt in grammar.non_terminals]
+            if valid_user:
+                return valid_user
+
         if "<op>" in grammar.non_terminals and "<e>" in grammar.non_terminals:
             e_idx = grammar.non_terminals.index("<e>")
             e_prods = [pr[0].strip() for pr in grammar.production_rules[e_idx]]
             if "<op>" in e_prods and len(e_prods) == 2:
-                return "<op>"
-        return grammar.non_terminals[0]
+                return ["<op>"]
+
+        # If root non-terminal itself is multi-choice and recursive (e.g. `<e>` or `<log_op>`), return it
+        root_nt = grammar.non_terminals[0]
+        root_prods = [pr[0] for pr in grammar.production_rules[0]]
+        if len(root_prods) >= 2 and any(root_nt in p for p in root_prods):
+            return [root_nt]
+
+        # General BNF topology introspection for multi-stage / statement-block grammars
+        recursive_nts: List[str] = []
+        compositional_nts: List[str] = []
+        for idx, nt in enumerate(grammar.non_terminals):
+            prods = [pr[0] for pr in grammar.production_rules[idx]]
+            if len(prods) < 2:
+                continue
+            child_refs = [re.findall(r"\<([\(\)\w,-.]+)\>", p) for p in prods]
+            total_child_refs = sum(len(refs) for refs in child_refs)
+            if total_child_refs == 0:
+                # Pure terminal leaf list (e.g. qubits, constants, variable names)
+                continue
+            is_self_recursive = any(nt in p for p in prods)
+            if is_self_recursive:
+                recursive_nts.append(nt)
+            else:
+                compositional_nts.append(nt)
+
+        if recursive_nts:
+            # Prefer deeper recursive statement/block lists over top-level outer loop wrappers
+            discovered = list(reversed(recursive_nts))[:2]
+            for c_nt in compositional_nts:
+                if len(discovered) < 3:
+                    discovered.append(c_nt)
+            return discovered
+        if compositional_nts:
+            return compositional_nts[:2]
+        return [root_nt]
+
+    def _target_non_terminal(self, grammar) -> str:
+        """Select the primary recursive expression/operator/statement non-terminal to evolve."""
+        return self._discover_target_non_terminals(grammar)[0]
+
+    def _max_rule_len(self, grammar) -> int:
+        """Compute an adaptive maximum rule length from the initial grammar's longest production."""
+        max_existing = max(
+            (len(pr[0]) for idx in range(len(grammar.non_terminals)) for pr in grammar.production_rules[idx]),
+            default=40,
+        )
+        return max(65, min(160, int(max_existing * 1.5)))
 
     def _build_agent_prompt(
         self,
@@ -154,6 +216,10 @@ class EpigeneticBNFAgent:
             for i, ind in enumerate(parsimony_elites[:3])
         ]
         sub_hints = [f"  - {r}" for _nt, r, _s in ast_suggestions[:5]]
+        t_idx = grammar.non_terminals.index(target_nt)
+        sample_prods = [pr[0].strip() for pr in grammar.production_rules[t_idx][:2]]
+        example_str = " or ".join(f"`{p}`" for p in sample_prods) if sample_prods else f"`{target_nt}` expansion"
+        max_chars = self._max_rule_len(grammar)
 
         return (
             "You are the Epigenetic BNF Grammar Architect for Grammatical Evolution (GRAPE).\n"
@@ -171,8 +237,8 @@ class EpigeneticBNFAgent:
             + "\n\nSTRICT CONSTRAINTS:\n"
             f"1. Every proposed rule MUST be a valid right-hand-side expansion for `{target_nt}` using ONLY "
             "the exact function names, operators, variables, and non-terminals (`<...>`) already present in the BNF grammar above.\n"
-            "2. Keep rules short (<= 55 chars) and contain at most 2 non-terminal `<...>` slots so tree depth does not explode.\n"
-            f"3. Do NOT repeat existing single rules; propose composite right-hand-side expressions (WITHOUT `{target_nt} ::=`), e.g. `pdiv(01.00, <e>)` or `(<e>-03.00)*(<e>-03.00)`.\n"
+            f"2. Keep rules short (<= {max_chars} chars) and contain at most 2 non-terminal `<...>` slots so tree depth does not explode.\n"
+            f"3. Do NOT repeat existing single rules; propose composite right-hand-side expressions (WITHOUT `{target_nt} ::=`), e.g. {example_str}.\n"
             "4. Respond ONLY with a valid JSON object in this exact format:\n"
             '{"reasoning": "1-sentence explanation", "proposed_rules": ["rhs_expr_1", "rhs_expr_2"]}\n'
         )
@@ -254,7 +320,8 @@ class EpigeneticBNFAgent:
 
     def _is_syntactically_safe_rule(self, rule_str: str, grammar) -> bool:
         """Verify that `rule_str` only references valid non-terminals and has balanced parens."""
-        if not rule_str or "|" in rule_str or "::=" in rule_str or len(rule_str) > 65:
+        max_len = self._max_rule_len(grammar)
+        if not rule_str or "|" in rule_str or "::=" in rule_str or len(rule_str) > max_len:
             return False
         if rule_str.count("(") != rule_str.count(")"):
             return False
@@ -312,8 +379,9 @@ class EpigeneticBNFAgent:
             for i, nt in enumerate(grammar.non_terminals)
         }
 
-        target_nt = self._target_non_terminal(grammar)
-        target_nts = [target_nt]
+        target_nts = self._discover_target_non_terminals(grammar)
+        max_lifted_len = self._max_rule_len(grammar)
+        is_multistage = len(target_nts) > 1 or target_nts[0] != grammar.non_terminals[0]
 
         motif_elite_hits: Dict[Tuple[str, str], Set[int]] = defaultdict(set)
         motif_rank_weight: Dict[Tuple[str, str], float] = defaultdict(float)
@@ -333,12 +401,12 @@ class EpigeneticBNFAgent:
                 if node.nt_name not in target_nts:
                     return
                 sub_depth = node.max_subtree_depth()
-                if sub_depth < 2 or sub_depth > 4:
+                if sub_depth < 2 or sub_depth > (6 if is_multistage else 4):
                     return
 
-                if 2 <= sub_depth <= 3 and len(node.children) >= 1:
+                if 2 <= sub_depth <= (5 if is_multistage else 3) and len(node.children) >= 1:
                     concrete = node.render_phenotype()
-                    if "x[" in concrete and len(concrete) <= 50 and node.count_terminal_nodes() >= 2:
+                    if ("x[" in concrete) and len(concrete) <= 50 and node.count_terminal_nodes() >= 2:
                         norm_c = concrete.replace(" ", "")
                         if norm_c not in existing_rules[node.nt_name]:
                             if any(op in concrete for op in ("+", "-", "*")) and not concrete.startswith("("):
@@ -348,10 +416,11 @@ class EpigeneticBNFAgent:
                             motif_rank_weight[key_c] += weight * 1.5
 
                 lifted = _extract_lifted_template(node)
-                if lifted and len(lifted) <= 65 and "<" in lifted and ">" in lifted:
+                if lifted and len(lifted) <= max_lifted_len and "<" in lifted and ">" in lifted:
                     arity = len(re.findall(r"\<([\(\)\w,-.]+)\>", lifted))
                     norm = lifted.replace(" ", "")
-                    if 1 <= arity <= 2 and norm not in existing_rules[node.nt_name] and norm != node.nt_name:
+                    max_arity = 3 if is_multistage else 2
+                    if 1 <= arity <= max_arity and norm not in existing_rules[node.nt_name] and norm != node.nt_name:
                         key = (node.nt_name, lifted)
                         motif_elite_hits[key].add(rank_idx)
                         motif_rank_weight[key] += weight * (1.4 if arity == 1 else 1.1)

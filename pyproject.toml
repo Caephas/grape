@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "grape-bds"
-version = "0.2.1"
+version = "0.2.2"
 description = "Grammatical Evolution framework built with DEAP — now featuring Epigenetic-Lamarckian Grammatical Evolution (EL-GE)"
 readme = "README.md"
 license = { file = "LICENSE" }

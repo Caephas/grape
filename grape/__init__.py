@@ -1,4 +1,4 @@
-"""GRAPE (Grammatical Algorithms in Python for Evolution) + EL-GE (v0.2.1)."""
+"""GRAPE (Grammatical Algorithms in Python for Evolution) + EL-GE (v0.2.2)."""
 
 from .grape import *  # noqa: F401, F403
 from .functions import *  # noqa: F401, F403
@@ -14,4 +14,4 @@ from .el_ge import (  # noqa: F401
     selEpsilonLexicase,
 )
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
